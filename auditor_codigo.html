@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Centro de Agentes IA</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Librería para convertir las respuestas Markdown del agente a HTML limpio -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
+
+    <!-- Barra Superior -->
+    <header class="bg-slate-800 border-b border-slate-700 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></div>
+            <h1 class="text-xl font-bold tracking-tight">Panel de Agentes ADK</h1>
+        </div>
+
+        <!-- Selector de Agente -->
+        <div class="flex items-center gap-3">
+            <label class="text-sm text-slate-400">Agente activo:</label>
+            <select id="agentSelector" onchange="cambiarAgente()"
+                class="bg-slate-700 border border-slate-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="auditor_codigo">🛡️ Auditor de Código (auditor_codigo)</option>
+            </select>
+            <button onclick="iniciarSesion()"
+                class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-lg border border-slate-600 transition">
+                + Nueva Sesión
+            </button>
+        </div>
+    </header>
+
+    <!-- Contenedor Principal de Respuestas -->
+    <main id="chatContainer" class="flex-1 max-w-5xl w-full mx-auto p-6 overflow-y-auto space-y-4">
+        <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-5 text-slate-300 text-sm">
+            Selecciona tu agente arriba y escribe una instrucción abajo. Por ejemplo:
+            <ul class="list-disc ml-5 mt-2 space-y-1 text-slate-400">
+                <li><b>Auditor de Código:</b> "Audita el proyecto en /Library/WebServer/Web/renta_autos"</li>
+            </ul>
+        </div>
+    </main>
+
+    <!-- Barra Inferior de Envío -->
+    <footer class="bg-slate-800 border-t border-slate-700 p-4">
+        <form id="promptForm" onsubmit="enviarMensaje(event)" class="max-w-5xl mx-auto flex gap-3">
+            <input id="userInput" type="text" placeholder="Escribe tu solicitud para el agente..."
+                class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500"
+                required />
+            <button id="sendBtn" type="submit"
+                class="bg-blue-600 hover:bg-blue-500 text-white font-medium px-6 py-3 rounded-xl transition flex items-center gap-2 disabled:opacity-50">
+                <span>Ejecutar</span>
+            </button>
+        </form>
+    </footer>
+
+    <script>
+        const API_URL = 'http://127.0.0.1:8080';
+        const USER_ID = 'walter_local';
+        let sessionId = 'sesion_' + Date.now();
+
+        // 1. Crear sesión en el servidor ADK
+        async function iniciarSesion() {
+            const appName = document.getElementById('agentSelector').value;
+            sessionId = 'sesion_' + Date.now();
+            try {
+                const res = await fetch(`${API_URL}/apps/${appName}/users/${USER_ID}/sessions/${sessionId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(() => ({}));
+                    throw new Error(errData.detail || `HTTP ${res.status}`);
+                }
+                agregarBurbuja('sistema', `Sesión nueva iniciada con **${appName}**`);
+            } catch (err) {
+                agregarBurbuja('error', `No se pudo conectar con ${API_URL}: ${err.message}. Asegúrate de que "adk api_server --allow_origins=*" esté en ejecución.`);
+            }
+        }
+
+        function cambiarAgente() {
+            document.getElementById('chatContainer').innerHTML = '';
+            iniciarSesion();
+        }
+
+        // 2. Enviar el prompt al endpoint /run del ADK
+        async function enviarMensaje(e) {
+            e.preventDefault();
+            const input = document.getElementById('userInput');
+            const btn = document.getElementById('sendBtn');
+            const appName = document.getElementById('agentSelector').value;
+            const texto = input.value.trim();
+            if (!texto) return;
+
+            agregarBurbuja('usuario', texto);
+            input.value = '';
+            btn.disabled = true;
+            btn.innerHTML = '<span>Procesando...</span>';
+
+            try {
+                const payload = {
+                    appName: appName,
+                    app_name: appName,
+                    userId: USER_ID,
+                    user_id: USER_ID,
+                    sessionId: sessionId,
+                    session_id: sessionId,
+                    newMessage: {
+                        role: 'user',
+                        parts: [{ text: texto }]
+                    },
+                    new_message: {
+                        role: 'user',
+                        parts: [{ text: texto }]
+                    }
+                };
+
+                const res = await fetch(`${API_URL}/run`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!res.ok) {
+                    const errorJson = await res.json().catch(() => ({}));
+                    throw new Error(errorJson.detail || `HTTP ${res.status}: ${res.statusText}`);
+                }
+
+                const eventos = await res.json();
+
+                // Extraer las respuestas de texto y las herramientas ejecutadas
+                let textoRespuesta = '';
+                let herramientasUsadas = [];
+
+                if (Array.isArray(eventos)) {
+                    for (const ev of eventos) {
+                        if (ev.content && ev.content.parts) {
+                            for (const part of ev.content.parts) {
+                                const funcCall = part.functionCall || part.function_call;
+                                if (funcCall && funcCall.name) {
+                                    herramientasUsadas.push(funcCall.name);
+                                }
+                                if (part.text) {
+                                    textoRespuesta += part.text + '\n';
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (herramientasUsadas.length > 0) {
+                    agregarBurbuja('herramienta', `🔧 Herramientas ejecutadas: \`${[...new Set(herramientasUsadas)].join(', ')}\``);
+                }
+
+                agregarBurbuja('agente', textoRespuesta.trim() || 'El agente completó la tarea sin devolver texto adicional.');
+            } catch (error) {
+                agregarBurbuja('error', 'Error al ejecutar el agente: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<span>Ejecutar</span>';
+            }
+        }
+
+        // 3. Pintar los mensajes en tu diseño
+        function agregarBurbuja(tipo, contenido) {
+            const container = document.getElementById('chatContainer');
+            const div = document.createElement('div');
+
+            if (tipo === 'usuario') {
+                div.className = 'bg-blue-600 text-white p-4 rounded-xl ml-auto max-w-2xl shadow';
+                div.textContent = contenido;
+            } else if (tipo === 'herramienta') {
+                div.className = 'bg-slate-800 border border-slate-700 text-amber-400 text-xs px-4 py-2 rounded-lg font-mono';
+                div.innerHTML = marked.parseInline(contenido);
+            } else if (tipo === 'sistema') {
+                div.className = 'text-center text-xs text-slate-500 my-2';
+                div.innerHTML = marked.parseInline(contenido);
+            } else if (tipo === 'error') {
+                div.className = 'bg-red-900/40 border border-red-700 text-red-300 p-4 rounded-xl text-sm';
+                div.textContent = contenido;
+            } else {
+                div.className = 'bg-slate-800 border border-slate-700 p-6 rounded-xl prose prose-invert max-w-none space-y-3 text-slate-200 leading-relaxed';
+                div.innerHTML = marked.parse(contenido);
+            }
+
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Iniciar sesión automáticamente al abrir la página
+        window.onload = iniciarSesion;
+    </script>
+</body>
+
+</html>

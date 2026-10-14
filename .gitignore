@@ -1,0 +1,16 @@
+# Secretos y credenciales de API (¡Fundamental!)
+.env
+*.env
+
+# Temporales de Python
+__pycache__/
+*.py[cod]
+
+# Base de datos y caché de sesiones de Google ADK
+.adk/
+**/.adk/
+*.db
+session.db
+
+# macOS
+.DS_Store
